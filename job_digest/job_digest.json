@@ -1,0 +1,1088 @@
+{
+  "name": "job_digest_upload",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 18
+            }
+          ]
+        }
+      },
+      "id": "7884c39c-bd00-4b0a-930a-ba6b2ead61d1",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "search_query",
+              "name": "搜索词",
+              "value": "data analyst hong kong",
+              "type": "string"
+            },
+            {
+              "id": "country_code",
+              "name": "地区代码",
+              "value": "hk",
+              "type": "string"
+            },
+            {
+              "id": "language",
+              "name": "语言",
+              "value": "en",
+              "type": "string"
+            },
+            {
+              "id": "window_days",
+              "name": "最近几个日历日",
+              "value": 7,
+              "type": "number"
+            },
+            {
+              "id": "min_score",
+              "name": "最低匹配分",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "max_results",
+              "name": "最多输出几条",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "fetch_pages",
+              "name": "抓取页数（每页10条）",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "must_match_keywords",
+              "name": "关注关键词",
+              "value": "data analyst,data analytics,analytics,data science|data scientist,business intelligence,bi analyst|bi developer|bi specialist|bi consultant|power bi,business analyst|business analysis,insight,reporting analyst|report analyst|report developer,data specialist|data consultant|data associate|data executive|data officer,product analyst|marketing analyst|operations analyst|commercial analyst|risk analyst|quantitative analyst|quant analyst|growth analyst|crm analyst|customer analyst|pricing analyst|fraud analyst|inventory analyst|supply chain analyst,tableau|qlik|looker|power query,数据分析|数据科学|商业分析|业务分析|数据运营|数据挖掘|数据开发|数据工程|报表分析|经营分析|指标分析|数据治理|数据产品",
+              "type": "string"
+            },
+            {
+              "id": "exclude_words",
+              "name": "排除词",
+              "value": "intern|internship,实习,sales,销售,insurance,保险,part-time,兼职,recruit*,外包,outsourcing,data entry|数据录入",
+              "type": "string"
+            },
+            {
+              "id": "company_blacklist",
+              "name": "公司黑名单",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "resume_profile",
+              "name": "简历与偏好",
+              "value": "（请替换成你自己的简历与偏好：X 年经验、核心技能、行业偏好、期望薪资、不接受哪些类型的岗位。这段文字会直接作为 AI 打分的依据）",
+              "type": "string"
+            },
+            {
+              "id": "timezone",
+              "name": "时区",
+              "value": "Asia/Shanghai",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "13d6dd59-4e61-46dc-8515-f3b5e1743cb4",
+      "name": "筛选条件（在此修改）",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        272,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 这一节点把「筛选条件（在此修改）」里的中文设置解析成\"本次运行真正生效的筛选条件\"。\n// 想确认现在到底用了哪些关键词、分数门槛、时间窗口、时区，直接执行这个节点看输出即可；\n// 下游节点（搜索、初筛、打分、汇总）一律读这里的值，不再各自解析原始字符串。\nconst raw = $input.first().json || {};\n\n// 节点里的框用中文名，方便一眼看懂要改哪个；这里统一映射成英文键，下游只认英文键。\nfunction pick(label, key, fallback) {\n  const a = raw[label];\n  if (a !== undefined && a !== null && a !== '') return a;\n  const b = raw[key];\n  if (b !== undefined && b !== null && b !== '') return b;\n  return fallback;\n}\n\n// 回落值必须和「筛选条件（在此修改）」里显示的数字一致，\n// 否则用户把这个框清空后，实际生效的会是另一个值（而且界面上看不出来）。\nconst DEFAULTS = {\n  window_days: 7,\n  min_score: 60,\n  max_results: 30,\n  fetch_pages: 3,\n  timezone: 'Asia/Shanghai',\n};\n\nconst cfg = {\n  search_query: pick('搜索词', 'search_query', ''),\n  country_code: pick('地区代码', 'country_code', 'hk'),\n  language: pick('语言', 'language', 'en'),\n  window_days: pick('最近几个日历日', 'window_days', DEFAULTS.window_days),\n  min_score: pick('最低匹配分', 'min_score', DEFAULTS.min_score),\n  max_results: pick('最多输出几条', 'max_results', DEFAULTS.max_results),\n  fetch_pages: pick('抓取页数（每页10条）', 'fetch_pages', DEFAULTS.fetch_pages),\n  must_match_keywords: pick('关注关键词', 'must_match_keywords', ''),\n  exclude_words: pick('排除词', 'exclude_words', ''),\n  company_blacklist: pick('公司黑名单', 'company_blacklist', ''),\n  resume_profile: pick('简历与偏好', 'resume_profile', ''),\n  timezone: pick('时区', 'timezone', DEFAULTS.timezone),\n};\n\nconst SEPARATORS = [',', '，', ';', '；', String.fromCharCode(10)];\nconst JOINER = String.fromCharCode(1);\n\nfunction toList(value) {\n  let text = String(value === null || value === undefined ? '' : value);\n  for (let i = 0; i < SEPARATORS.length; i++) {\n    text = text.split(SEPARATORS[i]).join(JOINER);\n  }\n  return text\n    .split(JOINER)\n    .map(function (s) { return s.trim().toLowerCase(); })\n    .filter(function (s) { return s.length > 0; });\n}\n\n// 配置问题不再静默：收集成 warnings，下游「全部岗位明细」会写进明细表，用户能直接看到。\nconst warnings = [];\n\nfunction toNumber(value, fallback, label) {\n  const n = Number(value);\n  if (!isFinite(n)) {\n    warnings.push(label + ' 不是有效数字，已按 ' + fallback + ' 处理');\n    return fallback;\n  }\n  return n;\n}\n\n// ── 时间窗口：按\"日历日\"算，和 JSearch 的 date_posted 同一口径 ──\n// window_days = 3 表示\"最近 3 个日历日（含今天）\"，即发布日 >= 今天往前 2 天。\nlet windowDays = Math.round(toNumber(cfg.window_days, DEFAULTS.window_days, '最近几个日历日'));\nif (windowDays < 1) {\n  warnings.push('最近几个日历日 至少为 1，已按 1 处理');\n  windowDays = 1;\n}\n// 接口只有 today / 3days / week / month 四档，最多约 30 天\nconst fetchDays = Math.min(30, windowDays);\nif (windowDays > 30) {\n  warnings.push('最近几个日历日 填了 ' + windowDays + ' 天，但接口最多只往回抓 30 天，更早的岗位抓不到');\n}\n\n// ── 分数与条数 ──\nconst minScore = Math.max(0, Math.min(100, Math.round(toNumber(cfg.min_score, DEFAULTS.min_score, '最低匹配分'))));\n\nlet maxResults = Math.round(toNumber(cfg.max_results, DEFAULTS.max_results, '最多输出几条'));\nif (maxResults < 1) {\n  warnings.push('最多输出几条 至少为 1，已按 1 处理');\n  maxResults = 1;\n}\n\n// ── 抓取量：和「最多输出几条」分开的两个设置 ──\n// JSearch 每页固定 10 条，搜索节点用的是支持 num_pages 的 /search 接口，\n// 一次请求把这些页一起拿回来（接口上限 20 页，这里保守取 10 页 = 100 条）。\n// 「抓取页数」只决定这轮抓多少条；「最多输出几条」只决定最后入选几条。\n// 两者解耦：抓得多但只输出几条是合法组合（多抓才能多机会过门槛），\n// 输出条数超过抓取量才需要提醒，否则用户会以为漏写了。\nlet fetchPages = Math.round(toNumber(cfg.fetch_pages, DEFAULTS.fetch_pages, '抓取页数（每页10条）'));\nif (fetchPages < 1) {\n  warnings.push('抓取页数 至少为 1，已按 1 页处理');\n  fetchPages = 1;\n}\nif (fetchPages > 10) {\n  warnings.push('抓取页数 填了 ' + fetchPages + ' 页，但这里最多只抓 10 页（100 条），已按 10 页处理');\n  fetchPages = 10;\n}\nconst fetchEstimate = fetchPages * 10;\nif (maxResults > fetchEstimate) {\n  warnings.push('最多输出几条 填了 ' + maxResults + ' 条，但本轮只抓 ' + fetchEstimate + ' 条（' + fetchPages + ' 页），实际最多就这么多；想多入选请调大「抓取页数」');\n}\n\n// ── 时区 ──\n// 发布日期按这个时区换算成\"日期\"再和窗口比较；非香港用户必须改这里，否则日期边界会差一天。\nlet timeZone = String(cfg.timezone === null || cfg.timezone === undefined ? '' : cfg.timezone).trim() || DEFAULTS.timezone;\ntry {\n  new Intl.DateTimeFormat('en-CA', { timeZone: timeZone }).format(new Date());\n} catch (e) {\n  warnings.push('时区 ' + timeZone + ' 无法识别，已改用 ' + DEFAULTS.timezone);\n  timeZone = DEFAULTS.timezone;\n}\n\nfunction dateParts(date, tz) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: tz,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n  const map = {};\n  for (const p of parts) map[p.type] = p.value;\n  return {\n    y: Number(map.year),\n    m: Number(map.month),\n    d: Number(map.day),\n    text: map.year + '-' + map.month + '-' + map.day,\n  };\n}\n\nconst today = dateParts(new Date(), timeZone);\n\n// 最早接受的发布日 = 当地今天往前 (windowDays - 1) 天。\n// 例：window_days = 7 → 接受 今天 到 今天-6 这 7 个日历日。\nconst cutoffDate = new Date(Date.UTC(today.y, today.m - 1, today.d) - (windowDays - 1) * 86400000)\n  .toISOString()\n  .slice(0, 10);\n\n// 接口档位按\"抓取天数\"挑最接近的一档，让抓取范围不小于本地判定范围\nfunction datePostedFor(days) {\n  if (days <= 1) return 'today';\n  if (days <= 3) return '3days';\n  if (days <= 7) return 'week';\n  return 'month';\n}\n\nconst datePosted = datePostedFor(fetchDays);\n\nif (windowDays <= 1) {\n  warnings.push('窗口设为 1 天时，接口按 UTC 计算今天，当地清晨运行时可能漏掉当天发布的岗位，建议设 2 天以上');\n}\n\n// ── 内容条件 ──\nconst keywords = toList(cfg.must_match_keywords);\nconst excludeWords = toList(cfg.exclude_words);\nconst companyBlacklist = toList(cfg.company_blacklist);\nconst searchQuery = String(cfg.search_query === null || cfg.search_query === undefined ? '' : cfg.search_query).trim();\n\nif (!searchQuery) {\n  warnings.push('搜索词为空，本轮不会返回任何职位');\n}\nif (keywords.length === 0) {\n  warnings.push('关注关键词为空，所有职位都会通过初筛（只受排除词和时间窗口限制）');\n}\n\nreturn [{\n  json: {\n    search_query: searchQuery,\n    country_code: String(cfg.country_code || 'hk').trim().toLowerCase(),\n    language: String(cfg.language || 'en').trim().toLowerCase(),\n    date_posted: datePosted,\n    window_days: windowDays,\n    fetch_days: fetchDays,\n    cutoff_date: cutoffDate,\n    cutoff_iso: new Date(Date.now() - windowDays * 86400000).toISOString(),\n    min_score: minScore,\n    max_results: maxResults,\n    num_pages: fetchPages,\n    fetch_estimate: fetchEstimate,\n    must_match_keywords: keywords,\n    exclude_words: excludeWords,\n    company_blacklist: companyBlacklist,\n    resume_profile: String(cfg.resume_profile === null || cfg.resume_profile === undefined ? '' : cfg.resume_profile).trim(),\n    timezone: timeZone,\n    warnings: warnings,\n  },\n}];"
+      },
+      "id": "14464108-f8c0-4934-9223-acdca99ef037",
+      "name": "生效筛选条件",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openwebninja.com/jsearch/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpTemplatedCustomAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $('生效筛选条件').first().json.search_query }}"
+            },
+            {
+              "name": "country",
+              "value": "={{ $('生效筛选条件').first().json.country_code }}"
+            },
+            {
+              "name": "language",
+              "value": "={{ $('生效筛选条件').first().json.language }}"
+            },
+            {
+              "name": "date_posted",
+              "value": "={{ $('生效筛选条件').first().json.date_posted }}"
+            },
+            {
+              "name": "num_pages",
+              "value": "={{ $('生效筛选条件').first().json.num_pages }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "5dc303a8-9a22-421d-a3ed-7c4feaa6040e",
+      "name": "搜索 JSearch 职位",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        720,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 搜索接口报错时走这条支路：不再让整轮运行悄无声息地结束，\n// 而是在明细表里留一行，写清楚是哪一步、什么错误，用户打开表就能看到。\nconst raw = $input.first().json || {};\n\nlet message = '';\ntry {\n  if (raw.error && raw.error.message) message = String(raw.error.message);\n  else if (raw.message) message = String(raw.message);\n  else message = JSON.stringify(raw).slice(0, 500);\n} catch (e) {\n  message = '未知错误';\n}\n\nlet cfg = {};\ntry { cfg = $('生效筛选条件').first().json || {}; } catch (e) { cfg = {}; }\n\nreturn [{\n  json: {\n    run_at: new Date().toISOString(),\n    job_id: '',\n    title: '',\n    company: '',\n    location: '',\n    posted_at: '',\n    url: '',\n    stage: '运行异常',\n    drop_reason: '搜索接口调用失败（已自动重试）：' + message + '。本轮没有产出，请稍后手动再跑一次。',\n    match_score: null,\n    passed_min_score: false,\n    reasons: '',\n    gaps: '',\n    tz_label: String(cfg.timezone || 'Asia/Shanghai'),\n  },\n}];"
+      },
+      "id": "908813d7-c927-4a8e-8aba-eeb703cfb782",
+      "name": "运行异常摘要",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "岗位明细表（job_review_log）"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_at": "={{ $json.run_at }}",
+            "job_id": "={{ $json.job_id }}",
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "location": "={{ $json.location }}",
+            "posted_at": "={{ $json.posted_at }}",
+            "url": "={{ $json.url }}",
+            "stage": "={{ $json.stage }}",
+            "drop_reason": "={{ $json.drop_reason }}",
+            "match_score": "={{ $json.match_score }}",
+            "passed_min_score": "={{ $json.passed_min_score }}",
+            "reasons": "={{ $json.reasons }}",
+            "gaps": "={{ $json.gaps }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_at",
+              "displayName": "run_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "job_id",
+              "displayName": "job_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "stage",
+              "displayName": "stage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "drop_reason",
+              "displayName": "drop_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "match_score",
+              "displayName": "match_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "passed_min_score",
+              "displayName": "passed_min_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "reasons",
+              "displayName": "reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gaps",
+              "displayName": "gaps",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "af2196fc-be82-4406-9467-41d21260bde5",
+      "name": "写入运行异常",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1168,
+        416
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "岗位明细表（job_review_log）"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "condition": "isNotEmpty"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "83ce4882-1408-4ee4-8685-a7eeaeea9e40",
+      "name": "清空上轮岗位明细",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        944,
+        224
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('生效筛选条件').first().json || {};\n\n// 关键词 / 排除词 / 公司黑名单 / 时间窗口 / 时区都已在「生效筛选条件」解析好，\n// 这里只负责把它们逐个套用到职位上，不再读原始配置字符串。\n\n// 时间窗口按\"日历日\"判定，和 JSearch 的 date_posted 同一口径：\n// 发布日不早于 cutoff_date（含当天）就算在窗口内。\nconst timeZone = String(cfg.timezone || 'Asia/Shanghai');\nconst windowDays = Number(cfg.window_days) > 0 ? Number(cfg.window_days) : 7;\n\nfunction localDate(date) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: timeZone,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n  const map = {};\n  for (const p of parts) map[p.type] = p.value;\n  return map.year + '-' + map.month + '-' + map.day;\n}\n\nlet cutoffDate = String(cfg.cutoff_date || '').trim();\nif (!cutoffDate) {\n  // 兜底：配置里没给 cutoff_date 时，按 window_days 从当地今天往前算\n  const nowLocal = localDate(new Date());\n  const y = Number(nowLocal.slice(0, 4));\n  const m = Number(nowLocal.slice(5, 7));\n  const d = Number(nowLocal.slice(8, 10));\n  cutoffDate = new Date(Date.UTC(y, m - 1, d) - (windowDays - 1) * 86400000).toISOString().slice(0, 10);\n}\n\nconst mustMatch = Array.isArray(cfg.must_match_keywords) ? cfg.must_match_keywords : [];\nconst excludeWords = Array.isArray(cfg.exclude_words) ? cfg.exclude_words : [];\nconst companyBlacklist = Array.isArray(cfg.company_blacklist) ? cfg.company_blacklist : [];\n\nfunction cleanText(html) {\n  return String(html || '')\n    .replace(/<[^>]*>/g, ' ')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/&quot;/gi, '\"')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\n// ── 关键词匹配规则（全工作流只有这一处实现，改规则只改这里）──\n// 英文：按「完整单词 / 完整短语」匹配，并自动兼容单复数。\n//   intern      → 命中 intern、interns；不命中 internship、internal、international\n//   internship  → 命中 internship、internships\n//   sales       → 命中 \"Sales Manager\"；不命中 Salesforce\n//   data analyst→ 命中 \"Data Analyst\"、\"Data-Analyst\"、\"Data Analysts\"\n//   结论：intern 和 internship 是两个不同关键词，需要让一组词形互认时用下面两种写法。\n//\n// 两种可选写法（可以混用，仍用逗号分隔多个条目）：\n//   1) 同义词组：竖线隔开，任一命中即算\n//        analytics|analytical|analytic      三种写法都算命中\n//        recruitment|recruiting|recruit     招人相关词形都算\n//   2) 末尾加 * 表示前缀匹配（只认末尾那个星号）\n//        recruit*   → 命中 recruit、recruits、recruiting、recruitment、recruiter\n//        insight*   → 命中 insight、insights\n//      注意：短词别用前缀。intern* 会把 internal、international 一起命中，sales* 会把 Salesforce 命中，\n//            这类词请用第 1 种写法逐个列举。\n// 中文：仍按「包含」匹配（中文没有词边界），例：数据 命中 数据分析师。\n// 排除词：只查标题，不查公司名、不查描述。想按公司名排除，请写进「公司黑名单」。\n// 公司黑名单：只查公司名，不查标题、不查描述。\nconst CJK_CHAR = /[㐀-鿿豈-﫿぀-ヿ]/;\n\n// 英文视图：小写 + 所有非字母数字变空格，再按空格切词。\n// 这样 \"Data-Analyst\" / \"Data / Analyst\" / \"Data  Analyst\" 都会切成同样的词序列。\nfunction tokenize(text) {\n  return String(text === null || text === undefined ? '' : text)\n    .toLowerCase()\n    .replace(/[^a-z0-9]+/g, ' ')\n    .split(' ')\n    .filter(function (t) { return t.length > 0; });\n}\n\n// 单数 ⇄ 复数：列出一个英文单词的所有可能形态\nfunction pluralVariants(word) {\n  const w = String(word || '').toLowerCase();\n  const forms = [w];\n  if (!w) return forms;\n  if (/(s|x|z|ch|sh)$/.test(w)) forms.push(w + 'es');\n  else if (/[^aeiou]y$/.test(w)) forms.push(w.slice(0, -1) + 'ies');\n  else forms.push(w + 's');\n  if (/ies$/.test(w)) forms.push(w.slice(0, -3) + 'y');\n  else if (/(ses|xes|zes|ches|shes)$/.test(w)) forms.push(w.slice(0, -2));\n  else if (/[^s]s$/.test(w)) forms.push(w.slice(0, -1));\n  return forms.filter(function (v, i) { return forms.indexOf(v) === i; });\n}\n\n// 去掉末尾的星号（前缀写法的记号），其余字符保持原样\nfunction stripStars(text) {\n  let out = String(text === null || text === undefined ? '' : text);\n  while (out.length > 0 && out.charAt(out.length - 1) === '*') out = out.slice(0, -1);\n  return out;\n}\n\n// 一条条目 → 一到多条规则：\n//   竖线分隔的同义词组会展开成多条规则，任一命中即算（全角竖线也认）\n//   含中文的走「包含」，其余按英文整词/短语处理；末尾带 * 的英文词按前缀比对\nfunction compileKeywords(list) {\n  const rules = [];\n  for (const entry of list) {\n    const entryText = String(entry === null || entry === undefined ? '' : entry)\n      .toLowerCase()\n      .split('｜')\n      .join('|')\n      .trim();\n    if (!entryText) continue;\n    for (const part of entryText.split('|')) {\n      const keyword = part.trim();\n      if (!keyword) continue;\n      const isPrefix = keyword.charAt(keyword.length - 1) === '*';\n      const body = stripStars(keyword);\n      if (CJK_CHAR.test(keyword)) {\n        if (body) rules.push({ kind: 'contains', value: body });\n        continue;\n      }\n      const tokens = tokenize(body);\n      if (tokens.length === 0) continue;\n      const last = tokens[tokens.length - 1];\n      rules.push({\n        kind: 'words',\n        head: tokens.slice(0, -1),\n        lastForms: isPrefix ? [] : pluralVariants(last),\n        lastPrefix: isPrefix ? last : '',\n      });\n    }\n  }\n  return rules;\n}\n\n// 整词短语匹配：在词序列里找连续的一段，最后一词按单复数集合比对\nfunction wordRuleHit(rule, tokens) {\n  const length = rule.head.length + 1;\n  for (let i = 0; i + length <= tokens.length; i++) {\n    let matched = true;\n    for (let j = 0; j < rule.head.length; j++) {\n      if (tokens[i + j] !== rule.head[j]) { matched = false; break; }\n    }\n    if (!matched) continue;\n    const tail = tokens[i + length - 1];\n    // 末尾星号的规则按前缀比对，其余按单复数集合比对\n    if (rule.lastPrefix ? tail.indexOf(rule.lastPrefix) === 0 : rule.lastForms.indexOf(tail) !== -1) return true;\n  }\n  return false;\n}\n\nfunction matchesAny(rules, rawText, tokens) {\n  for (const rule of rules) {\n    if (rule.kind === 'contains') {\n      if (rawText.indexOf(rule.value) !== -1) return true;\n    } else if (wordRuleHit(rule, tokens)) {\n      return true;\n    }\n  }\n  return false;\n}\n\nconst mustMatchRules = compileKeywords(mustMatch);\nconst excludeRules = compileKeywords(excludeWords);\nconst companyRules = compileKeywords(companyBlacklist);\n\nconst out = [];\nconst seenIds = new Set();\n\n// 搜索结果显式从「搜索 JSearch 职位」读，而不是 $input：\n// 它后面紧跟着「清空上轮岗位明细」，那个节点只输出一条空结果，\n// 用 $input 会把搜索结果顶掉、这里就一条职位都拿不到了。\nfor (const item of $('搜索 JSearch 职位').all()) {\n  const body = item.json || {};\n  let jobs = [];\n\n  if (Array.isArray(body.jobs)) {\n    jobs = body.jobs;\n  } else if (body.data && Array.isArray(body.data.jobs)) {\n    jobs = body.data.jobs;\n  } else if (Array.isArray(body.data)) {\n    jobs = body.data;\n  } else if (Array.isArray(body)) {\n    jobs = body;\n  }\n\n  for (const job of jobs) {\n    const jobId = String(job.job_id || job.id || '').trim();\n    if (!jobId) continue;\n\n    const title = String(job.job_title || job.title || '').trim();\n    const company = String(job.employer_name || job.company || '').trim();\n    const location = [job.job_city, job.job_state, job.job_country]\n      .filter(function (v) { return !!v; })\n      .join(', ') || String(job.job_location || '');\n    const description = cleanText(job.job_description || job.description || '');\n    const url = job.job_apply_link || job.job_google_link || '';\n\n    let postedAt = '';\n    if (job.job_posted_at_datetime_utc) {\n      postedAt = String(job.job_posted_at_datetime_utc);\n    } else if (job.job_posted_at_timestamp) {\n      postedAt = new Date(Number(job.job_posted_at_timestamp) * 1000).toISOString();\n    } else if (job.job_posted_at) {\n      const parsed = Date.parse(String(job.job_posted_at));\n      if (!isNaN(parsed)) postedAt = new Date(parsed).toISOString();\n    }\n\n    const postedMs = postedAt ? Date.parse(postedAt) : NaN;\n    // 中文按原文包含匹配，英文按词序列整词匹配 —— 两种视图各司其职，不能混用。\n    const titleRaw = title.toLowerCase();\n    const searchableRaw = (title + ' ' + company + ' ' + description).toLowerCase();\n    const searchableTokens = tokenize(title + ' ' + company + ' ' + description);\n    const titleTokens = tokenize(title);\n\n    // 不再静默丢弃：每条职位都带上 passed 和 drop_reason。\n    // 「只留通过初筛」只放行 passed=true 的，而被砍掉的这一批由\n    // 「全部岗位明细」写进记录表，能看到每条到底是哪一条条件把它砍掉的。\n    // 判定顺序 = 从\"这条职位本身合不合适\"到\"时间窗口\"到\"重复\"。\n    // 时间窗口放在内容条件之后，否则一条不相关的岗位也会被记成\"超出窗口\"，\n    // 把真正该调的关键词盖掉。\n    let dropReason = '';\n    if (seenIds.has(jobId)) {\n      dropReason = '同一批次内重复';\n    } else if (mustMatchRules.length > 0 && !matchesAny(mustMatchRules, searchableRaw, searchableTokens)) {\n      dropReason = '标题、公司或描述不含关注关键词';\n    } else if (matchesAny(excludeRules, titleRaw, titleTokens)) {\n      dropReason = '标题命中排除词';\n    } else if (matchesAny(companyRules, company.toLowerCase(), tokenize(company))) {\n      dropReason = '公司名命中黑名单';\n    } else if (!isNaN(postedMs) && localDate(new Date(postedMs)) < cutoffDate) {\n      dropReason = '发布日早于窗口起点 ' + cutoffDate;\n    }\n\n    seenIds.add(jobId);\n\n    const salaryParts = [job.job_min_salary, job.job_max_salary]\n      .filter(function (v) { return v !== null && v !== undefined && v !== ''; });\n\n    out.push({\n      json: {\n        job_id: jobId,\n        title: title,\n        company: company,\n        location: location,\n        posted_at: postedAt,\n        url: url,\n        salary: salaryParts.join(' - '),\n        description: description.slice(0, 2500),\n        passed: dropReason === '',\n        drop_reason: dropReason,\n      },\n    });\n  }\n}\n\nreturn out;"
+      },
+      "id": "2d8879ad-4932-4939-8a22-732d904f550d",
+      "name": "归一化并初筛",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        224
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "passed",
+              "leftValue": "={{ $json.passed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3813fc6-b061-4f74-9716-e08f19727361",
+      "name": "只留通过初筛",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1392,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "rowNotExists",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "已推送职位表（job_seen_jobs）"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "url",
+              "keyValue": "={{ $json.url }}"
+            }
+          ]
+        }
+      },
+      "id": "3df0ff0f-6738-4420-bd67-6621b9d6149f",
+      "name": "剔除已推送职位",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=你是求职匹配评估助手。请根据候选人的求职偏好，评估下面这个职位与候选人的匹配程度。\n\n## 候选人偏好\n{{ $('生效筛选条件').first().json.resume_profile }}\n\n## 职位信息\n公司：{{ $json.company }}\n职位：{{ $json.title }}\n地点：{{ $json.location }}\n发布时间：{{ $json.posted_at }}\n薪资：{{ $json.salary }}\n\n职位描述：\n{{ $json.description }}\n\n## 评分规则\n- score：0 到 100 的整数。地点、行业、职级、核心技能明显不符，低于 40；部分符合，40 到 69；高度符合，70 以上。\n- reasons：1 到 2 句中文，说明为什么匹配，必须引用职位描述里的具体证据，不要空泛。\n- gaps：1 句中文，指出缺口或风险（技能缺失、职级偏高、行业不符、信息不足等）。没有明显缺口就写\"无明显缺口\"。\n\n只输出一个 JSON 对象，不要代码块标记，不要任何额外解释：\n{\"score\": 0, \"reasons\": \"\", \"gaps\": \"\"}",
+        "batching": {
+          "batchSize": 3,
+          "delayBetweenBatches": 500
+        }
+      },
+      "id": "edd9c221-05c3-49cf-9b65-d7e17edc3034",
+      "name": "DeepSeek 匹配打分",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        1024,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "model": "deepseek-v4-pro",
+        "options": {
+          "temperature": 0.2,
+          "maxRetries": 2
+        }
+      },
+      "id": "1ac7287e-1038-426f-aacc-e8265d187227",
+      "name": "DeepSeek Chat",
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        1104,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('生效筛选条件').first().json || {};\nconst minScore = Number(cfg.min_score) >= 0 ? Number(cfg.min_score) : 0;\nconst maxResults = Number(cfg.max_results) > 0 ? Number(cfg.max_results) : 30;\n\nconst candidates = $('剔除已推送职位').all();\n\nconst FENCE = String.fromCharCode(96);\n\nfunction stripFence(text) {\n  return String(text || '')\n    .split(FENCE)\n    .join(' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction parseScore(raw) {\n  const cleaned = stripFence(raw);\n  let parsed = null;\n  try {\n    parsed = JSON.parse(cleaned);\n  } catch (e) {\n    const start = cleaned.indexOf('{');\n    const end = cleaned.lastIndexOf('}');\n    if (start !== -1 && end > start) {\n      try { parsed = JSON.parse(cleaned.slice(start, end + 1)); } catch (e2) { parsed = null; }\n    }\n  }\n  if (!parsed || typeof parsed !== 'object') return null;\n  const score = Number(parsed.score);\n  return {\n    score: isNaN(score) ? 0 : Math.max(0, Math.min(100, Math.round(score))),\n    reasons: String(parsed.reasons || '').trim(),\n    gaps: String(parsed.gaps || '').trim(),\n  };\n}\n\n// 发布时间统一按配置的时区显示，避免受实例时区影响\nconst timeZone = String(cfg.timezone || 'Asia/Shanghai');\n\nfunction formatMinute(value) {\n  if (!value) return '未知';\n  const parsed = new Date(value);\n  if (isNaN(parsed.getTime())) return String(value);\n  let parts;\n  const opts = {\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n    hour: '2-digit',\n    minute: '2-digit',\n    hour12: false,\n  };\n  try {\n    parts = new Intl.DateTimeFormat('en-GB', Object.assign({ timeZone: timeZone }, opts)).formatToParts(parsed);\n  } catch (e) {\n    parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(parsed);\n  }\n  const map = {};\n  for (const p of parts) map[p.type] = p.value;\n  const hour = map.hour === '24' ? '00' : map.hour;\n  return map.year + '-' + map.month + '-' + map.day + ' ' + hour + ':' + map.minute;\n}\n\nconst ranked = [];\n\nfor (const item of $input.all()) {\n  let index = 0;\n  const pairing = item.pairedItem;\n  if (typeof pairing === 'number') {\n    index = pairing;\n  } else if (pairing && typeof pairing === 'object' && typeof pairing.item === 'number') {\n    index = pairing.item;\n  } else if (Array.isArray(pairing) && pairing[0] && typeof pairing[0].item === 'number') {\n    index = pairing[0].item;\n  }\n\n  const job = (candidates[index] && candidates[index].json) || {};\n  if (!job.job_id) continue;\n\n  const result = parseScore(item.json.text || item.json.response || '');\n  if (!result) continue;\n  if (result.score < minScore) continue;\n\n  ranked.push({\n    job_id: job.job_id,\n    title: job.title || '',\n    company: job.company || '',\n    location: job.location || '',\n    posted_at: job.posted_at || '',\n    url: job.url || '',\n    salary: job.salary || '',\n    score: result.score,\n    reasons: result.reasons,\n    gaps: result.gaps,\n  });\n}\n\nranked.sort(function (a, b) { return b.score - a.score; });\nconst top = ranked.slice(0, maxResults);\n\nreturn top.map(function (row) {\n  const lines = [\n    '**公司**：' + (row.company || '未知'),\n    '**地点**：' + (row.location || '未知'),\n    '**发布时间**：' + (row.posted_at ? formatMinute(row.posted_at) + '（' + timeZone + '）' : '未知'),\n    '**匹配分**：' + row.score + ' / 100',\n    '**匹配理由**：' + (row.reasons || '无'),\n    '**缺口与风险**：' + (row.gaps || '无'),\n  ];\n  if (row.salary) lines.push('**薪资**：' + row.salary);\n  if (row.url) lines.push('', '[查看原始职位并投递](' + row.url + ')');\n\n  return {\n    json: {\n      job_id: row.job_id,\n      title: row.title,\n      company: row.company,\n      location: row.location,\n      posted_at: row.posted_at,\n      url: row.url,\n      score: row.score,\n      reasons: row.reasons,\n      gaps: row.gaps,\n      page_body: lines.join('\\n'),\n    },\n  };\n});"
+      },
+      "id": "8422a440-ec34-45ea-9127-6aef64e591dc",
+      "name": "汇总评分结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "职位库（导入后请选择你的 Notion 数据库）"
+        },
+        "title": "={{ $json.company }} · {{ $json.title }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "公司|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.company }}"
+            },
+            {
+              "key": "匹配分|number",
+              "type": "number",
+              "numberValue": "={{ Number($json.score) }}"
+            },
+            {
+              "key": "匹配理由|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.reasons }}"
+            },
+            {
+              "key": "缺口/风险|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.gaps }}"
+            },
+            {
+              "key": "发布时间|date",
+              "type": "date",
+              "date": "={{ $json.posted_at }}"
+            },
+            {
+              "key": "抓取日期|date",
+              "type": "date",
+              "date": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "地点|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.location }}"
+            },
+            {
+              "key": "链接|url",
+              "type": "url",
+              "urlValue": "={{ $json.url }}"
+            },
+            {
+              "key": "job_id|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.job_id }}"
+            }
+          ]
+        },
+        "contentType": "markdown",
+        "markdown": "={{ $json.page_body }}",
+        "options": {}
+      },
+      "id": "a38ad5e4-8d0d-4850-83a5-93a36b2f8ebe",
+      "name": "写入 Notion 职位库",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        1600,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "已推送职位表（job_seen_jobs）"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $('汇总评分结果').item.json.job_id }}",
+            "title": "={{ $('汇总评分结果').item.json.title }}",
+            "company": "={{ $('汇总评分结果').item.json.company }}",
+            "location": "={{ $('汇总评分结果').item.json.location }}",
+            "url": "={{ $('汇总评分结果').item.json.url }}",
+            "posted_at": "={{ $('汇总评分结果').item.json.posted_at || $now.toISO() }}",
+            "match_score": "={{ $('汇总评分结果').item.json.score }}",
+            "first_seen_at": "={{ $now.toISO() }}"
+          },
+          "schema": [
+            {
+              "id": "job_id",
+              "displayName": "job_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "date",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "match_score",
+              "displayName": "match_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "first_seen_at",
+              "displayName": "first_seen_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "date",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f6c11925-995e-4e42-ad6c-916a3c3f9b56",
+      "name": "记录已推送职位",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1824,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 这条支路只做一件事：把本轮抓到的每一条职位都留档，\n// 连同评分、淘汰原因和是否入选，方便回看\"为什么这条没进最终清单\"，\n// 然后回到「筛选条件（在此修改）」调对应的那一项。\n//\n// 它直接挂在「归一化并初筛」后面（而不是打分之后），\n// 所以\"一条都没通过初筛\"\"一条都没抓到\"这种最需要排查的轮次，\n// 明细表里也一定有内容，不会是被清空后的空白。\n// 打分结果用 try/catch 读：没走到打分时读到空，不算错误。\nconst cfg = $('生效筛选条件').first().json || {};\nconst minScore = Number(cfg.min_score) >= 0 ? Number(cfg.min_score) : 0;\nconst maxResults = Number(cfg.max_results) > 0 ? Number(cfg.max_results) : 30;\nconst windowDays = Number(cfg.window_days) > 0 ? Number(cfg.window_days) : 7;\nconst cutoffDate = String(cfg.cutoff_date || '');\nconst warnings = Array.isArray(cfg.warnings) ? cfg.warnings : [];\nconst runAt = new Date().toISOString();\nconst FENCE = String.fromCharCode(96);\n\nfunction parseScore(raw) {\n  const text = String(raw || '').split(FENCE).join(' ').trim();\n  let parsed = null;\n  try {\n    parsed = JSON.parse(text);\n  } catch (e) {\n    const start = text.indexOf('{');\n    const end = text.lastIndexOf('}');\n    if (start !== -1 && end > start) {\n      try { parsed = JSON.parse(text.slice(start, end + 1)); } catch (e2) { parsed = null; }\n    }\n  }\n  if (!parsed || typeof parsed !== 'object') return null;\n  const score = Number(parsed.score);\n  if (isNaN(score)) return null;\n  return {\n    score: Math.max(0, Math.min(100, Math.round(score))),\n    reasons: String(parsed.reasons || '').trim(),\n    gaps: String(parsed.gaps || '').trim(),\n  };\n}\n\n// 发布时间统一按配置的时区显示\nconst timeZone = String(cfg.timezone || 'Asia/Shanghai');\n\nfunction formatMinute(value) {\n  if (!value) return '';\n  const parsed = new Date(value);\n  if (isNaN(parsed.getTime())) return String(value);\n  let parts;\n  const opts = {\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n    hour: '2-digit',\n    minute: '2-digit',\n    hour12: false,\n  };\n  try {\n    parts = new Intl.DateTimeFormat('en-GB', Object.assign({ timeZone: timeZone }, opts)).formatToParts(parsed);\n  } catch (e) {\n    parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(parsed);\n  }\n  const map = {};\n  for (const p of parts) map[p.type] = p.value;\n  const hour = map.hour === '24' ? '00' : map.hour;\n  return map.year + '-' + map.month + '-' + map.day + ' ' + hour + ':' + map.minute;\n}\n\nfunction emptyRow(stage, dropReason) {\n  return {\n    json: {\n      run_at: runAt,\n      job_id: '',\n      title: '',\n      company: '',\n      location: '',\n      posted_at: '',\n      url: '',\n      stage: stage,\n      drop_reason: dropReason,\n      match_score: null,\n      passed_min_score: false,\n      reasons: '',\n      gaps: '',\n    },\n  };\n}\n\nconst allJobs = $('归一化并初筛').all()\n  .map(function (i) { return i.json || {}; })\n  .filter(function (j) { return !!j.job_id; });\n\nlet deduped = [];\ntry {\n  deduped = $('剔除已推送职位').all().map(function (i) { return i.json || {}; });\n} catch (e) {\n  deduped = [];\n}\n\nlet llmOutputs = [];\ntry {\n  llmOutputs = $('DeepSeek 匹配打分').all();\n} catch (e) {\n  llmOutputs = [];\n}\n\nconst scoreByJob = {};\nfor (let i = 0; i < llmOutputs.length; i++) {\n  let index = i;\n  const pairing = llmOutputs[i].pairedItem;\n  if (typeof pairing === 'number') {\n    index = pairing;\n  } else if (pairing && typeof pairing === 'object' && typeof pairing.item === 'number') {\n    index = pairing.item;\n  } else if (Array.isArray(pairing) && pairing[0] && typeof pairing[0].item === 'number') {\n    index = pairing[0].item;\n  }\n  const job = deduped[index] || {};\n  if (!job.job_id) continue;\n  const result = parseScore(llmOutputs[i].json.text || llmOutputs[i].json.response || '');\n  if (!result) continue;\n  scoreByJob[job.job_id] = result;\n}\n\nconst dedupedIds = {};\nfor (const job of deduped) if (job.job_id) dedupedIds[job.job_id] = true;\n\n// 先按分数排出\"分数达标的候选\"，才能区分\"分数够了但被最多输出条数截掉\"\nconst eligible = Object.keys(scoreByJob)\n  .map(function (id) { return { job_id: id, score: scoreByJob[id].score }; })\n  .filter(function (r) { return r.score >= minScore; })\n  .sort(function (a, b) { return b.score - a.score; });\n\nconst selectedIds = {};\nfor (let i = 0; i < Math.min(eligible.length, maxResults); i++) selectedIds[eligible[i].job_id] = true;\n\nconst rows = [];\n\n// 一条都没抓到：也留一行，否则用户看到的是一张被清空的表，分不清\"没岗位\"和\"跑坏了\"\nif (allJobs.length === 0) {\n  rows.push(emptyRow('本轮无结果', '搜索接口这次没有返回任何职位。可能原因：搜索词太窄、地区代码与搜索词不匹配、或接口临时异常。'));\n}\n\n// 配置问题逐条留痕，方便直接对着改「筛选条件（在此修改）」\nfor (const w of warnings) {\n  rows.push(emptyRow('配置提醒', String(w)));\n}\n\nfor (const job of allJobs) {\n  const result = scoreByJob[job.job_id] || null;\n  const score = result ? result.score : null;\n  let stage = '';\n  let dropReason = '';\n\n  if (job.passed !== true) {\n    stage = '初筛淘汰';\n    dropReason = job.drop_reason || '未记录原因';\n  } else if (!dedupedIds[job.job_id]) {\n    stage = '已推送过，本轮跳过';\n    dropReason = 'job_seen_jobs 里已有一条记录';\n  } else if (!result) {\n    stage = '打分未完成';\n    dropReason = '大模型没有返回可解析的分数';\n  } else if (selectedIds[job.job_id]) {\n    stage = '入选';\n  } else if (score >= minScore) {\n    stage = '分数达标但超出输出条数';\n    dropReason = '按分数排序后排在最多 ' + maxResults + ' 条之外';\n  } else {\n    stage = '未达分数线';\n    dropReason = '得分 ' + score + ' 低于门槛 ' + minScore;\n  }\n\n  rows.push({\n    json: {\n      run_at: runAt,\n      job_id: job.job_id || '',\n      title: job.title || '',\n      company: job.company || '',\n      location: job.location || '',\n      posted_at: formatMinute(job.posted_at),\n      url: job.url || '',\n      stage: stage,\n      drop_reason: dropReason,\n      match_score: score,\n      passed_min_score: score !== null && score >= minScore,\n      reasons: result ? result.reasons : '',\n      gaps: result ? result.gaps : '',\n      window_info: '最近 ' + windowDays + ' 个日历日，发布日不早于 ' + cutoffDate,\n    },\n  });\n}\n\nreturn rows;"
+      },
+      "id": "c2088c78-d83b-4ffe-8f0d-c11ab9f8cbdc",
+      "name": "全部岗位明细",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "岗位明细表（job_review_log）"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_at": "={{ $json.run_at }}",
+            "job_id": "={{ $json.job_id }}",
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "location": "={{ $json.location }}",
+            "posted_at": "={{ $json.posted_at }}",
+            "url": "={{ $json.url }}",
+            "stage": "={{ $json.stage }}",
+            "drop_reason": "={{ $json.drop_reason }}",
+            "match_score": "={{ $json.match_score }}",
+            "passed_min_score": "={{ $json.passed_min_score }}",
+            "reasons": "={{ $json.reasons }}",
+            "gaps": "={{ $json.gaps }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_at",
+              "displayName": "run_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "job_id",
+              "displayName": "job_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "posted_at",
+              "displayName": "posted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "stage",
+              "displayName": "stage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "drop_reason",
+              "displayName": "drop_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "match_score",
+              "displayName": "match_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "passed_min_score",
+              "displayName": "passed_min_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "reasons",
+              "displayName": "reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gaps",
+              "displayName": "gaps",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "64d10cfb-9d2e-43e6-977a-f47751cf75c7",
+      "name": "写入岗位明细记录",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1616,
+        320
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger": {
+      "main": [
+        [
+          {
+            "node": "筛选条件（在此修改）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "筛选条件（在此修改）": {
+      "main": [
+        [
+          {
+            "node": "生效筛选条件",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "生效筛选条件": {
+      "main": [
+        [
+          {
+            "node": "搜索 JSearch 职位",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "搜索 JSearch 职位": {
+      "main": [
+        [
+          {
+            "node": "清空上轮岗位明细",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "运行异常摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "运行异常摘要": {
+      "main": [
+        [
+          {
+            "node": "写入运行异常",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "清空上轮岗位明细": {
+      "main": [
+        [
+          {
+            "node": "归一化并初筛",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "归一化并初筛": {
+      "main": [
+        [
+          {
+            "node": "只留通过初筛",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "全部岗位明细",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "只留通过初筛": {
+      "main": [
+        [
+          {
+            "node": "剔除已推送职位",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "剔除已推送职位": {
+      "main": [
+        [
+          {
+            "node": "DeepSeek 匹配打分",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek 匹配打分": {
+      "main": [
+        [
+          {
+            "node": "汇总评分结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "DeepSeek 匹配打分",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "汇总评分结果": {
+      "main": [
+        [
+          {
+            "node": "写入 Notion 职位库",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "写入 Notion 职位库": {
+      "main": [
+        [
+          {
+            "node": "记录已推送职位",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "全部岗位明细": {
+      "main": [
+        [
+          {
+            "node": "写入岗位明细记录",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "716b4095-9269-418c-9ad9-c6cd7b095cf3",
+  "meta": {
+    "instanceId": "a81bda583c8f1ee8c61d9ad2f5d694328b8e62e5aaac5b07e4a260d83531be88"
+  },
+  "nodeGroups": [
+    {
+      "id": "d175c762-5e9e-446f-a023-480d1079e04b",
+      "name": "采集、初筛与留档",
+      "nodeIds": [
+        "13d6dd59-4e61-46dc-8515-f3b5e1743cb4",
+        "14464108-f8c0-4934-9223-acdca99ef037",
+        "5dc303a8-9a22-421d-a3ed-7c4feaa6040e",
+        "908813d7-c927-4a8e-8aba-eeb703cfb782",
+        "af2196fc-be82-4406-9467-41d21260bde5",
+        "83ce4882-1408-4ee4-8685-a7eeaeea9e40",
+        "2d8879ad-4932-4939-8a22-732d904f550d",
+        "c3813fc6-b061-4f74-9716-e08f19727361",
+        "c2088c78-d83b-4ffe-8f0d-c11ab9f8cbdc",
+        "64d10cfb-9d2e-43e6-977a-f47751cf75c7"
+      ],
+      "description": "按「筛选条件」抓取岗位并逐条标出淘汰原因，把本轮全部岗位连同分数、配置提醒写进明细表；接口报错时也留痕"
+    },
+    {
+      "id": "ad1e42da-68f3-47b0-a451-58a2b7c8374a",
+      "name": "打分与投递清单",
+      "nodeIds": [
+        "3df0ff0f-6738-4420-bd67-6621b9d6149f",
+        "1ac7287e-1038-426f-aacc-e8265d187227",
+        "edd9c221-05c3-49cf-9b65-d7e17edc3034",
+        "8422a440-ec34-45ea-9127-6aef64e591dc",
+        "a38ad5e4-8d0d-4850-83a5-93a36b2f8ebe",
+        "f6c11925-995e-4e42-ad6c-916a3c3f9b56"
+      ],
+      "description": "给通过初筛的岗位逐个打分，达到门槛的写进 Notion 职位库并记为已推送，下次不再重复推送"
+    }
+  ],
+  "id": "1uycClFww2KPjuda",
+  "tags": []
+}
